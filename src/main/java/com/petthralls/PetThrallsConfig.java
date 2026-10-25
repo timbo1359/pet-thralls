@@ -67,4 +67,17 @@ public interface PetThrallsConfig extends Config
 	{
 		return true;
 	}
+
+	@ConfigItem(
+		keyName = "partyPets",
+		name = "Party pets",
+		description = "In a RuneLite party, share your pet with party members who also use Pet Thralls,"
+			+ " and see their thralls as their pets. Party members without the plugin, or with this off,"
+			+ " see a normal thrall.",
+		position = 3
+	)
+	default boolean partyPets()
+	{
+		return true;
+	}
 }

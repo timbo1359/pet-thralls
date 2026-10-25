@@ -67,7 +67,14 @@ import net.runelite.client.chat.QueuedMessage;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.ConfigChanged;
+import net.runelite.client.events.PartyChanged;
 import net.runelite.client.events.RuneScapeProfileChanged;
+import net.runelite.client.party.PartyMember;
+import net.runelite.client.party.PartyService;
+import net.runelite.client.party.WSClient;
+import net.runelite.client.party.events.UserJoin;
+import net.runelite.client.party.events.UserPart;
+import net.runelite.client.party.messages.UserSync;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginDescriptor;
 import net.runelite.client.util.Text;
@@ -76,8 +83,8 @@ import org.slf4j.LoggerFactory;
 
 @PluginDescriptor(
 	name = "Pet Thralls",
-	description = "Draws your own thrall as a pet you have unlocked in your collection log",
-	tags = {"thrall", "pet", "arceuus", "cosmetic", "collection log", "model"}
+	description = "Draws your own thrall as a pet you have unlocked in your collection log, with an option to share it with your RuneLite party",
+	tags = {"thrall", "pet", "arceuus", "cosmetic", "collection log", "model", "party"}
 )
 public class PetThrallsPlugin extends Plugin
 {
@@ -115,19 +122,35 @@ public class PetThrallsPlugin extends Plugin
 	@Inject
 	private Gson gson;
 
-	private final RenderCallback hideOwnThrall = new RenderCallback()
+	@Inject
+	private PartyService partyService;
+
+	@Inject
+	private WSClient wsClient;
+
+	private final RenderCallback hideThralls = new RenderCallback()
 	{
 		@Override
 		public boolean addEntity(Renderable renderable, boolean ui)
 		{
-			// Only hide the 3D thrall, and only while the pet is actually being drawn in its place
-			return ui || tracker == null || renderable != tracker.getOwnedThrall()
-				|| follower == null || !follower.isShowing();
+			// Only hide the 3D thrall, and only while a pet is actually being drawn in its place
+			if (ui)
+			{
+				return true;
+			}
+			if (tracker != null && renderable == tracker.getOwnedThrall() && follower != null && follower.isShowing())
+			{
+				return false;
+			}
+			return partyPets == null || !partyPets.hides(renderable);
 		}
 	};
 
 	private ThrallTracker tracker;
 	private PetFollower follower;
+	private PartyPets partyPets;
+	private boolean showSymbol = true;
+	private boolean showOutline = true;
 
 	// Item ids of the pets the local player has unlocked, from the collection log
 	private final Set<Integer> unlockedPets = new HashSet<>();
@@ -150,26 +173,44 @@ public class PetThrallsPlugin extends Plugin
 	{
 		tracker = new ThrallTracker(client);
 		follower = new PetFollower(client);
-		renderCallbackManager.register(hideOwnThrall);
+		partyPets = new PartyPets(client, this::sendToParty, partyService::isInParty);
+		renderCallbackManager.register(hideThralls);
+		wsClient.registerMessage(PetThrallsPartyUpdate.class);
 
 		clientThread.invoke(() ->
 		{
+			partyPets.setEnabled(config.partyPets());
 			if (client.getGameState() == GameState.LOGGED_IN)
 			{
 				loadUnlockedPets();
 				tracker.start();
+				partyPets.start();
 			}
 			refreshPet();
+			shareWithParty(true);
+			requestPartySync();
 		});
 	}
 
 	@Override
 	protected void shutDown()
 	{
-		renderCallbackManager.unregister(hideOwnThrall);
+		renderCallbackManager.unregister(hideThralls);
+		wsClient.unregisterMessage(PetThrallsPartyUpdate.class);
+
+		// Taken now so a quick restart can't have its new one cleared below
+		PartyPets oldPartyPets = partyPets;
+		partyPets = null;
 
 		clientThread.invoke(() ->
 		{
+			if (oldPartyPets != null)
+			{
+				// Tell the party to stop drawing our pet
+				oldPartyPets.setEnabled(false);
+				oldPartyPets.share(ThrallPet.NONE, null, false);
+				oldPartyPets.clear();
+			}
 			if (follower != null)
 			{
 				follower.remove();
@@ -199,6 +240,7 @@ public class PetThrallsPlugin extends Plugin
 			clientThread.invoke(() ->
 			{
 				refreshPet();
+				shareWithParty(false);
 				if (client.getGameState() == GameState.LOGGED_IN)
 				{
 					warnIfSelectionLocked();
@@ -208,6 +250,25 @@ public class PetThrallsPlugin extends Plugin
 		else if ("showSymbol".equals(event.getKey()) || "showOutline".equals(event.getKey()))
 		{
 			clientThread.invoke(this::refreshPet);
+		}
+		else if ("partyPets".equals(event.getKey()))
+		{
+			clientThread.invoke(() ->
+			{
+				if (partyPets == null)
+				{
+					return;
+				}
+
+				boolean on = config.partyPets();
+				partyPets.setEnabled(on);
+				// Off: tells the party to stop drawing our pet. On: shares it and asks for theirs
+				shareWithParty(on);
+				if (on)
+				{
+					requestPartySync();
+				}
+			});
 		}
 	}
 
@@ -246,6 +307,12 @@ public class PetThrallsPlugin extends Plugin
 				{
 					follower.remove();
 				}
+				if (partyPets != null)
+				{
+					partyPets.removeObjects();
+				}
+				// Our thrall is gone
+				shareWithParty(false);
 				break;
 			default:
 				break;
@@ -259,6 +326,8 @@ public class PetThrallsPlugin extends Plugin
 		{
 			tracker.onGameTick();
 		}
+		// Tells the party when our thrall changes; does nothing if it hasn't
+		shareWithParty(false);
 
 		if (adventureLogLoaded)
 		{
@@ -292,15 +361,27 @@ public class PetThrallsPlugin extends Plugin
 			return;
 		}
 
-		NPC thrall = tracker.getOwnedThrall();
-		if (thrall == null || event.getActor() != thrall || follower == null)
+		if (!(event.getActor() instanceof NPC))
 		{
 			return;
 		}
 
-		if (Thralls.ATTACK_ANIMATIONS.contains(thrall.getAnimation()))
+		NPC npc = (NPC) event.getActor();
+		if (!Thralls.ATTACK_ANIMATIONS.contains(npc.getAnimation()))
 		{
-			follower.playAttack(Thralls.styleOf(thrall.getId()));
+			return;
+		}
+
+		PetFollower attacker = npc == tracker.getOwnedThrall() ? follower : null;
+		if (attacker == null && partyPets != null)
+		{
+			// A party member's thrall
+			attacker = partyPets.followerFor(npc);
+		}
+
+		if (attacker != null)
+		{
+			attacker.playAttack(Thralls.styleOf(npc.getId()));
 		}
 	}
 
@@ -321,6 +402,111 @@ public class PetThrallsPlugin extends Plugin
 		{
 			follower.hide();
 		}
+
+		if (partyPets != null)
+		{
+			partyPets.update(thrall, follower.isShowing(), showSymbol, showOutline);
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// Party pets (see PartyPets)
+	// ------------------------------------------------------------------
+
+	// Party events arrive on the party connection's thread, so each is handled on the client thread.
+	// Party members are looked up here, on the thread that changes them
+
+	@Subscribe
+	public void onPetThrallsPartyUpdate(PetThrallsPartyUpdate update)
+	{
+		if (update.getMemberId() == localMemberId())
+		{
+			// Our own message, echoed back
+			return;
+		}
+
+		clientThread.invoke(() ->
+		{
+			if (partyPets != null)
+			{
+				partyPets.receive(update);
+			}
+		});
+	}
+
+	@Subscribe
+	public void onUserSync(UserSync event)
+	{
+		// Someone joined and asked for everyone's state
+		clientThread.invoke(() -> shareWithParty(true));
+	}
+
+	@Subscribe
+	public void onUserJoin(UserJoin event)
+	{
+		if (event.getMemberId() == localMemberId())
+		{
+			// We've just joined: tell the party our pet
+			clientThread.invoke(() -> shareWithParty(true));
+		}
+	}
+
+	@Subscribe
+	public void onUserPart(UserPart event)
+	{
+		clientThread.invoke(() ->
+		{
+			if (partyPets != null)
+			{
+				partyPets.memberLeft(event.getMemberId());
+			}
+		});
+	}
+
+	@Subscribe
+	public void onPartyChanged(PartyChanged event)
+	{
+		clientThread.invoke(() ->
+		{
+			if (partyPets != null)
+			{
+				partyPets.clear();
+			}
+		});
+	}
+
+	private void shareWithParty(boolean force)
+	{
+		if (partyPets != null && follower != null && tracker != null)
+		{
+			partyPets.share(follower.getPet(), tracker.getOwnedThrall(), force);
+		}
+	}
+
+	private void sendToParty(PetThrallsPartyUpdate update)
+	{
+		if (partyService.isInParty())
+		{
+			partyService.send(update);
+		}
+	}
+
+	/**
+	 * Asks every party member to send their state, so we see pets that were shared
+	 * before we were listening.
+	 */
+	private void requestPartySync()
+	{
+		if (partyPets != null && partyPets.isEnabled() && partyService.isInParty())
+		{
+			partyService.send(new UserSync());
+		}
+	}
+
+	private long localMemberId()
+	{
+		PartyMember local = partyService.getLocalMember();
+		return local == null ? -1 : local.getMemberId();
 	}
 
 	// ------------------------------------------------------------------
@@ -372,6 +558,10 @@ public class PetThrallsPlugin extends Plugin
 		{
 			tracker.onNpcSpawned(event.getNpc());
 		}
+		if (partyPets != null)
+		{
+			partyPets.onNpcSpawned(event.getNpc());
+		}
 	}
 
 	@Subscribe
@@ -380,6 +570,10 @@ public class PetThrallsPlugin extends Plugin
 		if (tracker != null)
 		{
 			tracker.onNpcDespawned(event.getNpc());
+		}
+		if (partyPets != null)
+		{
+			partyPets.onNpcDespawned(event.getNpc());
 		}
 	}
 
@@ -580,7 +774,10 @@ public class PetThrallsPlugin extends Plugin
 		ThrallPet selected = config.pet();
 		boolean usable = selected != ThrallPet.NONE && unlockedPets.contains(selected.getItemId());
 		follower.setPet(usable ? selected : ThrallPet.NONE);
-		follower.setMarkings(config.showSymbol(), config.showOutline());
+		// Also used for party members' pets
+		showSymbol = config.showSymbol();
+		showOutline = config.showOutline();
+		follower.setMarkings(showSymbol, showOutline);
 	}
 
 	private void warnIfSelectionLocked()

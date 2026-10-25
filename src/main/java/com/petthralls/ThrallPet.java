@@ -707,6 +707,26 @@ public enum ThrallPet
 	}
 
 	/**
+	 * @return the pet or look with this enum name, or {@link #NONE} if there isn't one
+	 */
+	static ThrallPet fromName(String name)
+	{
+		if (name == null || name.isEmpty())
+		{
+			return NONE;
+		}
+
+		for (ThrallPet pet : values())
+		{
+			if (pet.name().equals(name))
+			{
+				return pet;
+			}
+		}
+		return NONE;
+	}
+
+	/**
 	 * Finds a pet's default look by its collection log / item name, ignoring case.
 	 *
 	 * @return the pet, or {@code null} if the name isn't a pet

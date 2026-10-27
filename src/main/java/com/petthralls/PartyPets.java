@@ -267,6 +267,27 @@ class PartyPets
 	}
 
 	/**
+	 * @return true if a party member has said this thrall is theirs
+	 */
+	boolean isMemberThrall(NPC npc)
+	{
+		if (!enabled || members.isEmpty())
+		{
+			return false;
+		}
+
+		int world = client.getWorld();
+		for (Member member : members.values())
+		{
+			if (thrallOf(member.update, world) == npc)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * @return true if this is a party member's thrall that is drawn as their pet this frame
 	 */
 	boolean hides(Object renderable)

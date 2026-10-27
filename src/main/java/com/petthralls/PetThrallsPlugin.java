@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -100,6 +101,8 @@ public class PetThrallsPlugin extends Plugin
 	private static final Pattern ADVENTURE_LOG_TITLE_PATTERN = Pattern.compile("The Exploits of (.+)");
 	private static final String ALL_PETS_TITLE = "All Pets";
 	private static final int COLLECTION_LOG_HEADER_TITLE_INDEX = 0;
+	// Settings that change which pet is chosen
+	private static final Set<String> PET_KEYS = ImmutableSet.of("pet", "petPerType", "ghostlyPet", "skeletalPet", "zombifiedPet");
 
 	@Inject
 	private Client client;
@@ -149,6 +152,7 @@ public class PetThrallsPlugin extends Plugin
 	private ThrallTracker tracker;
 	private PetFollower follower;
 	private PartyPets partyPets;
+	private final PetChooser chooser = new PetChooser(new Random());
 	private boolean showSymbol = true;
 	private boolean showOutline = true;
 
@@ -174,6 +178,10 @@ public class PetThrallsPlugin extends Plugin
 		tracker = new ThrallTracker(client);
 		follower = new PetFollower(client);
 		partyPets = new PartyPets(client, this::sendToParty, partyService::isInParty);
+		chooser.setUnlocked(unlockedPets);
+		chooser.reroll();
+		// Never take a party member's thrall as ours
+		tracker.setExcluded(npc -> partyPets != null && partyPets.isMemberThrall(npc));
 		renderCallbackManager.register(hideThralls);
 		wsClient.registerMessage(PetThrallsPartyUpdate.class);
 
@@ -235,10 +243,12 @@ public class PetThrallsPlugin extends Plugin
 			return;
 		}
 
-		if ("pet".equals(event.getKey()))
+		if (PET_KEYS.contains(event.getKey()))
 		{
 			clientThread.invoke(() ->
 			{
+				// A new random pick too, so changing the setting shows its effect straight away
+				chooser.reroll();
 				refreshPet();
 				shareWithParty(false);
 				if (client.getGameState() == GameState.LOGGED_IN)
@@ -396,6 +406,8 @@ public class PetThrallsPlugin extends Plugin
 		NPC thrall = tracker.getOwnedThrall();
 		if (thrall != null)
 		{
+			// Depends on the thrall's type, and for Random on which thrall it is
+			follower.setPet(chooser.petFor(thrall));
 			follower.update(thrall);
 		}
 		else
@@ -477,9 +489,11 @@ public class PetThrallsPlugin extends Plugin
 
 	private void shareWithParty(boolean force)
 	{
-		if (partyPets != null && follower != null && tracker != null)
+		if (partyPets != null && tracker != null)
 		{
-			partyPets.share(follower.getPet(), tracker.getOwnedThrall(), force);
+			// The party only needs our pet while we have a thrall out for it to be drawn on
+			NPC thrall = tracker.getOwnedThrall();
+			partyPets.share(thrall == null ? ThrallPet.NONE : chooser.petFor(thrall), thrall, force);
 		}
 	}
 
@@ -603,41 +617,81 @@ public class PetThrallsPlugin extends Plugin
 		}
 
 		Widget title = header.getChild(COLLECTION_LOG_HEADER_TITLE_INDEX);
-		if (title == null || !ALL_PETS_TITLE.equals(title.getText()))
-		{
-			return;
-		}
-
 		Widget items = client.getWidget(InterfaceID.Collection.ITEMS_CONTENTS);
-		if (items == null || items.getChildren() == null)
+		if (title == null || items == null || items.getChildren() == null)
 		{
 			return;
 		}
 
-		Set<Integer> found = new HashSet<>();
+		// The All Pets page has every pet but Orion, which is only on The Fractured Archive's page,
+		// so every page's pets are read: the pets on a page are updated and the rest kept
+		boolean allPetsPage = ALL_PETS_TITLE.equals(title.getText());
+		Set<Integer> onPage = new HashSet<>();
+		Set<Integer> obtained = new HashSet<>();
 		for (Widget child : items.getChildren())
 		{
-			// Unobtained entries are drawn faded out
-			if (child != null && child.getOpacity() == 0 && child.getItemId() > 0)
+			if (child == null || child.getItemId() <= 0 || (!allPetsPage && !ThrallPet.isPetItem(child.getItemId())))
 			{
-				found.add(child.getItemId());
+				continue;
+			}
+
+			onPage.add(child.getItemId());
+			// Unobtained entries are drawn faded out
+			if (child.getOpacity() == 0)
+			{
+				obtained.add(child.getItemId());
 			}
 		}
 
-		boolean changed = !unlockedPetsKnown || !found.equals(unlockedPets);
+		if (onPage.isEmpty())
+		{
+			return;
+		}
+
+		Set<Integer> updated = new HashSet<>(unlockedPets);
+		updated.removeAll(onPage);
+		updated.addAll(obtained);
+
+		Set<Integer> newlyUnlocked = new HashSet<>(updated);
+		newlyUnlocked.removeAll(unlockedPets);
+		boolean changed = !updated.equals(unlockedPets) || (allPetsPage && !unlockedPetsKnown);
+
 		unlockedPets.clear();
-		unlockedPets.addAll(found);
-		unlockedPetsKnown = true;
+		unlockedPets.addAll(updated);
+		if (allPetsPage)
+		{
+			unlockedPetsKnown = true;
+		}
 		publishUnlockedPets();
 
-		if (changed)
+		if (!changed)
 		{
-			log.debug("Loaded {} pets from the collection log", found.size());
-			saveUnlockedPets();
-			refreshPet();
-			sendMessage("Synced " + found.size() + " unlocked pet" + (found.size() == 1 ? "" : "s") + " from your collection log.");
-			warnIfSelectionLocked();
+			return;
 		}
+
+		log.debug("Collection log page {}: {} pets, {} obtained", title.getText(), onPage.size(), obtained.size());
+		if (unlockedPetsKnown)
+		{
+			saveUnlockedPets();
+		}
+		refreshPet();
+
+		if (allPetsPage)
+		{
+			int count = unlockedPets.size();
+			sendMessage("Synced " + count + " unlocked pet" + (count == 1 ? "" : "s") + " from your collection log.");
+		}
+		else if (!newlyUnlocked.isEmpty())
+		{
+			List<String> names = new ArrayList<>();
+			for (int item : newlyUnlocked)
+			{
+				names.add(ThrallPet.looksOf(item).get(0).getPetName());
+			}
+			Collections.sort(names);
+			sendMessage("Synced " + joinNames(names) + " from your collection log.");
+		}
+		warnIfSelectionLocked();
 	}
 
 	@Subscribe
@@ -761,29 +815,42 @@ public class PetThrallsPlugin extends Plugin
 	// ------------------------------------------------------------------
 
 	/**
-	 * Points the follower at the selected pet if it is unlocked, otherwise at nothing
-	 * so the thrall is left as it is.
+	 * Reads the pet settings. Which pet is drawn also depends on the thrall, so the follower
+	 * is pointed at it every frame (see {@link PetChooser}).
 	 */
 	private void refreshPet()
 	{
-		if (follower == null)
-		{
-			return;
-		}
+		chooser.setSelection(config.pet(), config.petPerType(), config.ghostlyPet(), config.skeletalPet(), config.zombifiedPet());
 
-		ThrallPet selected = config.pet();
-		boolean usable = selected != ThrallPet.NONE && unlockedPets.contains(selected.getItemId());
-		follower.setPet(usable ? selected : ThrallPet.NONE);
 		// Also used for party members' pets
 		showSymbol = config.showSymbol();
 		showOutline = config.showOutline();
-		follower.setMarkings(showSymbol, showOutline);
+		if (follower != null)
+		{
+			follower.setMarkings(showSymbol, showOutline);
+		}
 	}
 
+	/**
+	 * Tells the player when a chosen pet can't be used, so their thrall will look normal.
+	 */
 	private void warnIfSelectionLocked()
 	{
-		ThrallPet selected = config.pet();
-		if (selected == ThrallPet.NONE || unlockedPets.contains(selected.getItemId()))
+		List<String> locked = new ArrayList<>();
+		boolean random = false;
+		for (ThrallPet choice : chooser.activeChoices())
+		{
+			if (choice == ThrallPet.RANDOM)
+			{
+				random = true;
+			}
+			else if (choice.isPet() && !unlockedPets.contains(choice.getItemId()) && !locked.contains(choice.getPetName()))
+			{
+				locked.add(choice.getPetName());
+			}
+		}
+
+		if (locked.isEmpty() && (!random || chooser.canPickRandom()))
 		{
 			return;
 		}
@@ -793,11 +860,26 @@ public class PetThrallsPlugin extends Plugin
 			sendMessage("Open Collection log > Other > All Pets so your unlocked pets can be checked. "
 				+ "Your thrall will look normal until then.");
 		}
+		else if (!locked.isEmpty())
+		{
+			boolean one = locked.size() == 1;
+			sendMessage(joinNames(locked) + (one ? " isn't" : " aren't") + " unlocked in your collection log, so "
+				+ (one ? "that thrall" : "those thralls") + " will look normal. "
+				+ "If you've just got it, open Collection log > Other > All Pets (or the pet's own page) to sync.");
+		}
 		else
 		{
-			sendMessage(selected.getPetName() + " isn't unlocked in your collection log, so your thrall will look normal. "
-				+ "If you've just got it, open Collection log > Other > All Pets to sync.");
+			sendMessage("You haven't unlocked any pets in your collection log yet, so a random pet can't be picked.");
 		}
+	}
+
+	private static String joinNames(List<String> names)
+	{
+		if (names.size() <= 1)
+		{
+			return names.isEmpty() ? "" : names.get(0);
+		}
+		return String.join(", ", names.subList(0, names.size() - 1)) + " and " + names.get(names.size() - 1);
 	}
 
 	private void sendMessage(String text)

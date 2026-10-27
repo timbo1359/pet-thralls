@@ -24,15 +24,20 @@
  */
 package com.petthralls;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import net.runelite.api.gameval.AnimationID;
 import net.runelite.api.gameval.ItemID;
 import net.runelite.api.gameval.NpcID;
 
 /**
- * Every pet in the collection log's "All Pets" page, and every alternate look
- * (metamorphosis) the game has for it, with the follower NPC whose model and
- * animations are drawn in place of the thrall.
+ * Every pet in the collection log's "All Pets" page, plus Orion (which is only on The
+ * Fractured Archive page), and every alternate look (metamorphosis) the game has for
+ * each, with the follower NPC whose model and animations are drawn in place of the thrall.
  * <p>
  * Entries are grouped: a pet's default look first, then its other looks, which are
  * indented in the settings dropdown. Pets you have unlocked are shown green and
@@ -48,6 +53,8 @@ import net.runelite.api.gameval.NpcID;
 public enum ThrallPet
 {
 	NONE("None (normal thrall)", "", true, -1, -1, -1, -1, -1, -1, -1, 0, 0),
+	// A different unlocked pet, picked at random, each time a thrall is summoned
+	RANDOM("Random unlocked pet", "", true, -1, -1, -1, -1, -1, -1, -1, 0, 0),
 	ABYSSAL_ORPHAN("Abyssal orphan", "Abyssal orphan", true, ItemID.ABYSSALSIRE_PET, NpcID.ABYSSALSIRE_PET,
 		AnimationID.ABYSSAL_SCION_IDLE, AnimationID.ABYSSAL_SCION_WALK,
 		AnimationID.ABYSSAL_SCION_ATTACK_MELEE, AnimationID.ABYSSAL_SCION_ATTACK_RANGED, AnimationID.ABYSSAL_SCION_ATTACK_MELEE, 0, 0),
@@ -327,6 +334,12 @@ public enum ThrallPet
 	OLMLET_FLYING_VESPINA("Flying Vespina", "Olmlet", false, ItemID.OLMPET, NpcID.VESPULA_FLYING_PET,
 		AnimationID.VESPULA_PET_FLY, AnimationID.VESPULA_PET_FLY,
 		AnimationID.VESPULA_ATTACK_MELEE_FLYING, AnimationID.VESPULA_ATTACK_RANGED, AnimationID.VESPULA_ATTACK_MELEE_FLYING, 0, 0),
+	ORION("Orion", "Orion", true, ItemID.OCELLUSPET, NpcID.OCELLUS_PET,
+		AnimationID.NPC_OCELLUS_PHASE3_PET_IDLE, AnimationID.NPC_OCELLUS_PHASE3_PET_WALK,
+		AnimationID.NPC_OCELLUS_PHASE3_MELEE_BASIC, AnimationID.NPC_OCELLUS_PHASE3_BASIC_PROJECTILE_NOLOOP, AnimationID.NPC_OCELLUS_PHASE3_BASIC_PROJECTILE_NOLOOP, 20, 10),
+	ORION_ROBED("Robed Orion", "Orion", false, ItemID.OCELLUSPET, NpcID.OCELLUS_PET_VARIANT_1,
+		AnimationID.NPC_OCELLUS_PHASE1_IDLE, AnimationID.NPC_OCELLUS_PHASE1_WALK,
+		AnimationID.NPC_OCELLUS_PHASE1_BASIC_PROJECTILE_START, AnimationID.NPC_OCELLUS_PHASE1_RAILGUN, AnimationID.NPC_OCELLUS_PHASE1_BASIC_PROJECTILE_START, 20, 10),
 	PET_PENANCE_QUEEN("Penance Queen", "Pet Penance Queen", true, ItemID.PENANCEPET, NpcID.PENANCE_PET,
 		AnimationID.BARBASSAULT_PENACNE_QUEEN_NEW_READY, AnimationID.BARBASSAULT_PENANCE_QUEEN_NEW_WALK,
 		AnimationID.BARBASSAULT_PENACNE_QUEEN_NEW_ATTACK, AnimationID.BARBASSAULT_PENACNE_QUEEN_NEW_ATTACK_RANGED, AnimationID.BARBASSAULT_PENACNE_QUEEN_NEW_ATTACK, 30, 30),
@@ -643,6 +656,31 @@ public enum ThrallPet
 	}
 
 	/**
+	 * @return true for an actual pet or look, false for the "None" and "Random" choices
+	 */
+	public boolean isPet()
+	{
+		return this != NONE && this != RANDOM;
+	}
+
+	/**
+	 * @return true if this item is one of the pets in this list
+	 */
+	static boolean isPetItem(int itemId)
+	{
+		return Holder.LOOKS.containsKey(itemId);
+	}
+
+	/**
+	 * @return every look of the pet with this collection log item, its default look first
+	 */
+	static List<ThrallPet> looksOf(int itemId)
+	{
+		List<ThrallPet> looks = Holder.LOOKS.get(itemId);
+		return looks == null ? Collections.emptyList() : looks;
+	}
+
+	/**
 	 * @return the short name shown in the dropdown, e.g. "Puppadile" for one of Olmlet's looks
 	 */
 	public String getDisplayName()
@@ -735,7 +773,7 @@ public enum ThrallPet
 	{
 		for (ThrallPet pet : values())
 		{
-			if (pet != NONE && pet.defaultLook && pet.petName.equalsIgnoreCase(name))
+			if (pet.isPet() && pet.defaultLook && pet.petName.equalsIgnoreCase(name))
 			{
 				return pet;
 			}
@@ -752,11 +790,28 @@ public enum ThrallPet
 	{
 		String text = defaultLook ? label : INDENT + label;
 		Set<Integer> unlocked = unlockedItems;
-		if (this == NONE || unlocked == null)
+		if (!isPet() || unlocked == null)
 		{
 			return text;
 		}
 		return "<html><font color='" + (unlocked.contains(itemId) ? UNLOCKED_COLOR : LOCKED_COLOR) + "'>"
 			+ text + "</font></html>";
+	}
+
+	// Built once, after every constant exists
+	private static final class Holder
+	{
+		static final Map<Integer, List<ThrallPet>> LOOKS = new HashMap<>();
+
+		static
+		{
+			for (ThrallPet pet : values())
+			{
+				if (pet.isPet())
+				{
+					LOOKS.computeIfAbsent(pet.itemId, id -> new ArrayList<>()).add(pet);
+				}
+			}
+		}
 	}
 }

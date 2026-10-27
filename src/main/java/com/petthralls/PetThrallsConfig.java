@@ -27,17 +27,27 @@ package com.petthralls;
 import net.runelite.client.config.Config;
 import net.runelite.client.config.ConfigGroup;
 import net.runelite.client.config.ConfigItem;
+import net.runelite.client.config.ConfigSection;
 
 @ConfigGroup(PetThrallsConfig.GROUP)
 public interface PetThrallsConfig extends Config
 {
 	String GROUP = "petthralls";
 
+	@ConfigSection(
+		name = "Pet for each thrall type",
+		description = "Use a different pet for ghostly (mage), skeletal (range) and zombified (melee) thralls",
+		position = 1,
+		closedByDefault = true
+	)
+	String THRALL_TYPES_SECTION = "thrallTypes";
+
 	@ConfigItem(
 		keyName = "pet",
 		name = "Pet",
 		description = "The pet your own thrall is drawn as. Green pets are unlocked in your collection log and red ones"
 			+ " aren't; each pet's other looks are listed under it and can be used once the pet is unlocked."
+			+ " Random picks one of your unlocked pets each time you summon a thrall."
 			+ " Open Collection log > Other > All Pets once so the plugin can see your pets.",
 		position = 0
 	)
@@ -47,10 +57,58 @@ public interface PetThrallsConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "petPerType",
+		name = "Use these pets",
+		description = "Use the pets below instead of the Pet setting, depending on which thrall you summon",
+		position = 0,
+		section = THRALL_TYPES_SECTION
+	)
+	default boolean petPerType()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "ghostlyPet",
+		name = "Mage",
+		description = "The pet your ghostly (mage) thralls are drawn as, when Use these pets is on",
+		position = 1,
+		section = THRALL_TYPES_SECTION
+	)
+	default ThrallPet ghostlyPet()
+	{
+		return ThrallPet.NONE;
+	}
+
+	@ConfigItem(
+		keyName = "skeletalPet",
+		name = "Range",
+		description = "The pet your skeletal (range) thralls are drawn as, when Use these pets is on",
+		position = 2,
+		section = THRALL_TYPES_SECTION
+	)
+	default ThrallPet skeletalPet()
+	{
+		return ThrallPet.NONE;
+	}
+
+	@ConfigItem(
+		keyName = "zombifiedPet",
+		name = "Melee",
+		description = "The pet your zombified (melee) thralls are drawn as, when Use these pets is on",
+		position = 3,
+		section = THRALL_TYPES_SECTION
+	)
+	default ThrallPet zombifiedPet()
+	{
+		return ThrallPet.NONE;
+	}
+
+	@ConfigItem(
 		keyName = "showSymbol",
 		name = "Thrall symbol",
 		description = "Show the thrall's coloured symbol on the ground under the pet",
-		position = 1
+		position = 2
 	)
 	default boolean showSymbol()
 	{
@@ -61,7 +119,7 @@ public interface PetThrallsConfig extends Config
 		keyName = "showOutline",
 		name = "Thrall outline",
 		description = "Outline the pet in the thrall's colour: purple for ghostly, green for skeletal, red for zombified",
-		position = 2
+		position = 3
 	)
 	default boolean showOutline()
 	{
@@ -74,7 +132,7 @@ public interface PetThrallsConfig extends Config
 		description = "In a RuneLite party, share your pet with party members who also use Pet Thralls,"
 			+ " and see their thralls as their pets. Party members without the plugin, or with this off,"
 			+ " see a normal thrall.",
-		position = 3
+		position = 4
 	)
 	default boolean partyPets()
 	{

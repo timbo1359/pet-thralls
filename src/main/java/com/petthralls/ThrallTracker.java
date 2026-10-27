@@ -76,6 +76,8 @@ class ThrallTracker
 	private static final int NEARBY_MAX_DISTANCE = 2;
 
 	private final Client client;
+	// Thralls that must never be taken as ours, e.g. ones party members say are theirs
+	private Predicate<NPC> excluded = npc -> false;
 
 	private static final class Seen
 	{
@@ -112,6 +114,14 @@ class ThrallTracker
 	NPC getOwnedThrall()
 	{
 		return ownedThrall;
+	}
+
+	/**
+	 * @param others thralls known to belong to someone else, which are never taken as ours
+	 */
+	void setExcluded(Predicate<NPC> others)
+	{
+		excluded = others == null ? npc -> false : others;
 	}
 
 	/**
@@ -374,7 +384,7 @@ class ThrallTracker
 		for (NPC npc : sceneThralls.keySet())
 		{
 			WorldPoint at = npc.getWorldLocation();
-			if (at == null || !filter.test(npc))
+			if (at == null || excluded.test(npc) || !filter.test(npc))
 			{
 				continue;
 			}
@@ -420,7 +430,7 @@ class ThrallTracker
 			NPC npc = entry.getKey();
 			Seen seen = entry.getValue();
 			WorldPoint at = npc.getWorldLocation();
-			if (npc == ownedThrall || at == null || !isFromThisCast(npc))
+			if (npc == ownedThrall || at == null || excluded.test(npc) || !isFromThisCast(npc))
 			{
 				continue;
 			}
